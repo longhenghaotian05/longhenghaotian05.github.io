@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>牌局紀錄工具 (精準比牌版)</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 10px; background: #f0f0f0; }
+        .grid-container { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .card-area { padding: 20px; text-align: center; color: white; min-height: 100px; border-radius: 8px; font-size: 24px;}
+        .blue-bg { background-color: #3b82f6; }
+        .red-bg { background-color: #ef4444; }
+        
+        .keyboard { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin-bottom: 15px; }
+        button { padding: 15px; font-size: 18px; border: none; border-radius: 5px; cursor: pointer; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        button:active { background: #ddd; }
+        .btn-action { background: #333; color: white; font-weight: bold; }
+        .btn-undo { background: #f59e0b; color: white; font-weight: bold; }
+        
+        .recommend-panel { background: #fff; padding: 15px; margin-bottom: 15px; border-radius: 8px; font-size: 18px; line-height: 1.6; border-left: 5px solid #333; }
+        .rec-label { font-weight: bold; color: #555; }
+        .rec-value { font-weight: bold; font-size: 20px; }
+        .text-blue { color: #3b82f6; }
+        .text-red { color: #ef4444; }
+        
+        .result-area { background: #fff; padding: 15px; margin-bottom: 10px; border-radius: 8px; font-weight: bold;}
+        .history { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+        .badge { padding: 5px 10px; border-radius: 3px; background: #eee; }
+        .badge-positive { color: green; border: 1px solid green; }
+        .badge-negative { color: red; border: 1px solid red; }
+        .history-stats { font-size: 14px; color: #666; margin-top: 5px; font-weight: normal; }
+        
+        .control-btns { display: flex; gap: 10px; margin-bottom: 10px; }
+        .control-btns button { flex: 1; padding: 10px; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+    <div class="grid-container">
+        <div class="card-area blue-bg" id="leftArea">左邊 (藍)<br><span id="leftCards"></span></div>
+        <div class="card-area red-bg" id="rightArea">右邊 (紅)<br><span id="rightCards"></span></div>
+    </div>
+
+    <div class="recommend-panel">
+        <div><span class="rec-label">📌 規則推薦：</span> <span id="recommendation" class="rec-value">-</span></div>
+        <div><span class="rec-label">🧠 過去趨勢推薦：</span> <span id="historyRecommend" class="rec-value" style="color:#888;">需先累積 5 局紀錄</span></div>
+        <div class="history-stats" id="historyDetail"></div>
+    </div>
+
+    <div class="keyboard" id="keyboard">
+        <!-- JS 動態生成 -->
+    </div>
+
+    <div class="grid-container">
+        <button class="btn-action blue-bg" onclick="recordResult('藍')">開藍</button>
+        <button class="btn-action red-bg" onclick="recordResult('紅')">開紅</button>
+    </div>
+    
+    <button class="btn-action" style="width: 100%; margin-bottom: 15px;" onclick="resetRound()">🔄 重新輸入本局牌型</button>
+    
+    <div class="control-btns">
+        <button style="background:#e5e7eb;" onclick="clearSession()">🧹 淨空畫面紀錄 (保留大數據)</button>
+        <button style="background:#fee2e2; color:#b91c1c;" onclick="clearGlobalDB()">⚠️ 刪除設備大數據</button>
+    </div>
+
+    <div class="result-area">
+        本次正反紀錄追蹤：
+        <div class="history" id="historyLog"></div>
+    </div>
+
+<script>
+    const keys = ['A','2','3','4','5','6','7','8','9','10','J','Q','K','不補', '退回'];
+    const cardValues = {'A':1, '2':2, '3':3, '4':4, '5':5, '6':6, '7':7, '8':8, '9':9, '10':10, 'J':11, 'Q':12, 'K':13, '不補':0};
+    const publicCards = ['10', 'J', 'Q', 'K'];
+    
+    let step = 1;
+    let leftState = [];
+    let rightState = [];
+    let currentRecommend = null;
+    
+    let sessionLog = []; 
+    let globalDB = JSON.parse(localStorage.getItem('baccarat_global_v1')) || [];
+
+    const keyboardDiv = document.getElementById('keyboard');
+    keys.forEach(k => {
+        let btn = document.createElement('button');
+        btn.innerText = k;
+        if (k === '退回') btn.className = 'btn-undo';
+        btn.onclick = () => handleInput(k);
+        keyboardDiv.appendChild(btn);
+    });
+
+    renderTraceLog();
+    checkHistoryPattern();
+
+    function handleInput(val) {
+        if (val === '退回') {
+            undoStep();
+            return;
+        }
+        if (step > 6) return alert('本局已滿，請點擊「開藍」或「開紅」記錄結果。');
+
+        if (val !== '不補') {
+            if (step === 1 || step === 2 || step === 5) leftState.push(val);
+            if (step === 3 || step === 4 || step === 6) rightState.push(val);
+        }
+        step++;
+        updateUI();
+    }
+
+    function undoStep() {
+        if (step === 1) return; 
+        let lastStep = step - 1;
+        if (lastStep === 1 || lastStep === 2 || lastStep === 5) {
+            if (leftState.length > 0) leftState.pop();
+        } else if (lastStep === 3 || lastStep === 4 || lastStep === 6) {
+            if (rightState.length > 0) rightState.pop();
+        }
+        step--;
+        updateUI();
+    }
+
+    function updateUI() {
+        document.getElementById('leftCards').innerText = leftState.join(' ');
+        document.getElementById('rightCards').innerText = rightState.join(' ');
+        calculateRuleRecommendation();
+        checkHistoryPattern();
+    }
+
+    // 核心修正：逐張比對公牌大小的邏輯
+    function calculateRuleRecommendation() {
+        if (leftState.length < 2 || rightState.length < 2) {
+            currentRecommend = '-';
+            updateRecommendUI();
+            return;
+        }
+        
+        let leftPubs = leftState.filter(c => publicCards.includes(c));
+        let rightPubs = rightState.filter(c => publicCards.includes(c));
+
+        // 第一層：比公牌張數
+        if (leftPubs.length > rightPubs.length) {
+            currentRecommend = '藍';
+        } else if (rightPubs.length > leftPubs.length) {
+            currentRecommend = '紅';
+        } else {
+            // 第二層：張數相同時，逐張比對公牌點數
+            // 將公牌轉換為實際點數，並進行「由大到小」排序
+            let leftVals = leftPubs.map(c => cardValues[c]).sort((a, b) => b - a);
+            let rightVals = rightPubs.map(c => cardValues[c]).sort((a, b) => b - a);
+
+            let tieBreak = '觀望';
+            
+            // 從最大張開始逐一比對
+            for (let i = 0; i < leftVals.length; i++) {
+                if (leftVals[i] > rightVals[i]) {
+                    tieBreak = '藍';
+                    break; // 左邊大，跳出迴圈
+                } else if (rightVals[i] > leftVals[i]) {
+                    tieBreak = '紅';
+                    break; // 右邊大，跳出迴圈
+                }
+                // 若單張點數相等，則進入下一個迴圈比對第二大的牌
+            }
+            
+            currentRecommend = tieBreak;
+        }
+        updateRecommendUI();
+    }
+
+    function updateRecommendUI() {
+        let recSpan = document.getElementById('recommendation');
+        recSpan.innerText = currentRecommend;
+        recSpan.className = currentRecommend === '藍' ? 'rec-value text-blue' : (currentRecommend === '紅' ? 'rec-value text-red' : 'rec-value');
+    }
+
+    function checkHistoryPattern() {
+        const histRecSpan = document.getElementById('historyRecommend');
+        const detailSpan = document.getElementById('historyDetail');
+
+        if (currentRecommend === '-' || currentRecommend === '觀望') {
+            histRecSpan.innerText = currentRecommend === '觀望' ? '當前觀望，無法反推趨勢' : '尚需輸入卡牌';
+            histRecSpan.className = 'rec-value';
+            detailSpan.innerText = `底層大數據已累積: ${globalDB.length} 筆`;
+            return;
+        }
+
+        if (sessionLog.length < 5) {
+            histRecSpan.innerText = `畫面序列累積中 (${sessionLog.length}/5)`;
+            histRecSpan.className = 'rec-value';
+            detailSpan.innerText = `需連續紀錄 5 筆才能啟動預測 (底層庫共 ${globalDB.length} 筆)`;
+            return;
+        }
+
+        const recent5 = sessionLog.slice(-5).map(x => x.char);
+        let posWins = 0;
+        let negWins = 0;
+
+        for (let i = 0; i <= globalDB.length - 6; i++) {
+            let isMatch = true;
+            for (let j = 0; j < 5; j++) {
+                if (globalDB[i + j] !== recent5[j]) {
+                    isMatch = false;
+                    break;
+                }
+            }
+            if (isMatch) {
+                let nextOutcome = globalDB[i + 5];
+                if (nextOutcome === '正') posWins++;
+                else if (nextOutcome === '反') negWins++;
+            }
+        }
+
+        const totalMatches = posWins + negWins;
+
+        if (totalMatches === 0) {
+            histRecSpan.innerText = '無此規律歷史資料';
+            histRecSpan.className = 'rec-value';
+            detailSpan.innerText = `序列 [${recent5.join('')}] 在大數據中尚未出現過`;
+            return;
+        }
+
+        let predictedChar = '';
+        if (posWins > negWins) predictedChar = '正';
+        else if (negWins > posWins) predictedChar = '反';
+        else predictedChar = '平手';
+
+        if (predictedChar === '平手') {
+            histRecSpan.innerText = '觀望 (歷史勝率各半)';
+            histRecSpan.className = 'rec-value';
+        } else {
+            let finalRec = (predictedChar === '正') ? currentRecommend : (currentRecommend === '藍' ? '紅' : '藍');
+            histRecSpan.innerText = `${finalRec} (高機率開${predictedChar})`;
+            histRecSpan.className = finalRec === '藍' ? 'rec-value text-blue' : 'rec-value text-red';
+        }
+
+        detailSpan.innerText = `大數據出現 ${totalMatches} 次 (接正:${posWins} / 接反:${negWins})`;
+    }
+
+    function recordResult(actualResult) {
+        if (leftState.length < 2 || rightState.length < 2) return alert('牌局未達紀錄標準。');
+
+        if (currentRecommend === '藍' || currentRecommend === '紅') {
+            const isPositive = (actualResult === currentRecommend);
+            const recordChar = isPositive ? '正' : '反';
+            const cssClass = isPositive ? 'badge-positive' : 'badge-negative';
+            
+            sessionLog.push({ char: recordChar, css: cssClass });
+            globalDB.push(recordChar);
+            localStorage.setItem('baccarat_global_v1', JSON.stringify(globalDB));
+        }
+
+        renderTraceLog();
+        resetRound();
+    }
+
+    function renderTraceLog() {
+        const logDiv = document.getElementById('historyLog');
+        logDiv.innerHTML = '';
+        sessionLog.forEach(h => {
+            let span = document.createElement('span');
+            span.className = `badge ${h.css}`;
+            span.innerText = h.char;
+            logDiv.appendChild(span);
+        });
+    }
+
+    function resetRound() {
+        step = 1;
+        leftState = [];
+        rightState = [];
+        currentRecommend = '-';
+        updateUI();
+    }
+
+    function clearSession() {
+        sessionLog = [];
+        renderTraceLog();
+        resetRound();
+    }
+
+    function clearGlobalDB() {
+        if(confirm('警告：這將會刪除設備中「所有過去累積的勝率大數據」，確定要刪除嗎？')) {
+            globalDB = [];
+            localStorage.removeItem('baccarat_global_v1');
+            clearSession(); 
+        }
+    }
+</script>
+</body>
+</html>
